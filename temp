@@ -1,0 +1,71 @@
+import org.apache.spark.sql.functions._
+import org.apache.spark.sql.expressions.UserDefinedFunction
+import org.apache.commons.math3.distribution.NormalDistribution
+
+val normalDist = new NormalDistribution()
+
+val calculateBasel4RwaUDF: UserDefinedFunction = udf((
+    cparty: String,
+    exposureType: String,
+    pd: Double,
+    lgd: Double,
+    M: Double,
+    EAD: Double,
+    SME_sales: java.lang.Double,
+    defaulted: String,
+    EL_BE: java.lang.Double,
+    retailType: String
+) => {
+  val G_PD = normalDist.inverseCumulativeProbability(pd)
+  val G_999 = normalDist.inverseCumulativeProbability(0.999)
+  var K: Double = 0.0
+
+  if (defaulted == "Y") {
+    if (EL_BE == null)
+      throw new IllegalArgumentException("For defaulted exposures, EL_BE must be provided.")
+    K = Math.max(0, lgd - EL_BE)
+  } else if (cparty.toLowerCase == "retail") {
+    val R = retailType match {
+      case "Residential Mortgage" =>
+        if (exposureType == "res mortgage materially_dependent") 0.22 else 0.15
+      case "Qualifying Revolving" => 0.04
+      case "Other Retail" =>
+        0.03 * (1 - Math.exp(-35 * pd)) / (1 - Math.exp(-35)) +
+          0.16 * (1 - (1 - Math.exp(-35 * pd)) / (1 - Math.exp(-35)))
+      case _ => throw new IllegalArgumentException("Invalid retailType")
+    }
+
+    K = (lgd * normalDist.cumulativeProbability((G_PD + Math.sqrt(R) * G_999) / Math.sqrt(1 - R)) - pd * lgd)
+  } else if (Array("corporate", "sovereign", "pse", "bank").contains(cparty.toLowerCase)) {
+    var R = exposureType match {
+      case "HVCRE" =>
+        0.12 * (1 - Math.exp(-50 * pd)) / (1 - Math.exp(-50)) +
+          0.30 * (1 - (1 - Math.exp(-50 * pd)) / (1 - Math.exp(-50)))
+      case "FI" =>
+        1.25 * (0.12 * (1 - Math.exp(-50 * pd)) / (1 - Math.exp(-50)) +
+        0.24 * (1 - (1 - Math.exp(-50 * pd)) / (1 - Math.exp(-50))))
+      case "SME" if SME_sales != null =>
+        val sales = Math.min(Math.max(SME_sales, 7.5), 75)
+        val sizeAdj = 0.04 * (1 - (sales - 7.5) / (75 - 7.5))
+        0.12 * (1 - Math.exp(-50 * pd)) / (1 - Math.exp(-50)) +
+        0.24 * (1 - (1 - Math.exp(-50 * pd)) / (1 - Math.exp(-50))) - sizeAdj
+      case _ =>
+        0.12 * (1 - Math.exp(-50 * pd)) / (1 - Math.exp(-50)) +
+        0.24 * (1 - (1 - Math.exp(-50 * pd)) / (1 - Math.exp(-50)))
+    }
+
+    val b = Math.pow(0.11852 - 0.05478 * Math.log(pd), 2)
+    val maturityAdj = (1 + (M - 2.5) * b) / (1 - 1.5 * b)
+
+    K = (lgd * normalDist.cumulativeProbability((G_PD + Math.sqrt(R) * G_999) / Math.sqrt(1 - R)) - pd * lgd) * maturityAdj
+  } else {
+    throw new IllegalArgumentException("Invalid cparty type. Choose 'Retail', 'Corporate', 'sovereign', 'PSE', or 'bank'.")
+  }
+
+  val RWA = K * EAD * 12.5
+
+  RWA
+})
+
+// Example Spark usage:
+// df.withColumn("RWA", calculateBasel4RwaUDF(col("cparty"), col("exposureType"), col("pd"), col("lgd"), col("M"), col("EAD"), col("SME_sales"), col("defaulted"), col("EL_BE"), col("retail_type")))
