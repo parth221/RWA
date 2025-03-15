@@ -1,0 +1,28 @@
+ val calculateBasel4RWAUDF: UserDefinedFunction = F.udf(calculateBasel4RWA _)
+
+  def processRWAData(spark: SparkSession, inputFile: String, outputFile: String): Unit = {
+    import spark.implicits._
+
+    val data = spark.read.option("header", true).option("inferSchema", true).csv(inputFile)
+
+    val rwaData = data.withColumn("RWA Previous", calculateBasel4RWAUDF(
+      $"Counterparty", $"Exposure Type", $"Previous PD", $"Previous LGD", $"Previous Maturity", $"Previous EAD", $"Previous SME_sales", F.lit("N"), F.lit(null), $"Retail Type"
+    )).withColumn("RWA PD Impact", calculateBasel4RWAUDF(
+      $"Counterparty", $"Exposure Type", $"Current PD", $"Previous LGD", $"Previous Maturity", $"Previous EAD", $"Previous SME_sales", F.lit("N"), F.lit(null), $"Retail Type"
+    ) - $"RWA Previous"
+    ).withColumn("RWA LGD Impact", calculateBasel4RWAUDF(
+      $"Counterparty", $"Exposure Type", $"Previous PD", $"Current LGD", $"Previous Maturity", $"Previous EAD", $"Previous SME_sales", F.lit("N"), F.lit(null), $"Retail Type"
+    ) - $"RWA Previous"
+    ).withColumn("RWA Maturity Impact", calculateBasel4RWAUDF(
+      $"Counterparty", $"Exposure Type", $"Previous PD", $"Previous LGD", $"Maturity", $"Previous EAD", $"Previous SME_sales", F.lit("N"), F.lit(null), $"Retail Type"
+    ) - $"RWA Previous"
+    ).withColumn("RWA SME Sales Impact", calculateBasel4RWAUDF(
+      $"Counterparty", $"Exposure Type", $"Previous PD", $"Previous LGD", $"Previous Maturity", $"Previous EAD", $"Current SME_sales", F.lit("N"), F.lit(null), $"Retail Type"
+    ) - $"RWA Previous"
+    ).withColumn("RWA EAD Impact", ($"Previous RWA Percentage" / 100) * ($"Current EAD" - $"Previous EAD") / $"Previous FX"
+    ).withColumn("RWA FX Impact", ($"Previous RWA Percentage" / 100) * ($"Previous EAD" / $"Previous FX") * ($"Current FX" - $"Previous FX")
+    )
+
+    rwaData.write.option("header", true).csv(outputFile)
+  }
+}
