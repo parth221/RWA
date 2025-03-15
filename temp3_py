@@ -1,0 +1,124 @@
+# visualization.py
+import pandas as pd
+import plotly.graph_objects as go
+import dash
+from dash import dcc, html, Input, Output
+import sqlite3
+import threading
+
+# Initialize Dash app
+app = dash.Dash(__name__)
+app.title = "RWA Waterfall Analysis"
+
+# Database connection function
+def get_db_connection():
+    return sqlite3.connect("rwa_data.db", check_same_thread=False, timeout=10)
+
+# Function to fetch aggregated sums efficiently
+def fetch_aggregated_data(selected_cparty, selected_customer):
+    conn = get_db_connection()
+    query = """
+        SELECT 
+            SUM(`Previous RWA`) AS total_previous_rwa, 
+            SUM(`Current RWA`) AS total_current_rwa, 
+            SUM(`Impact of FX Change on EAD`) AS total_fx_impact, 
+            SUM(`Impact of EAD Change`) AS total_ead_impact, 
+            SUM(`Impact of RWA Percentage Change`) AS total_rwa_percentage_impact, 
+            SUM(CASE WHEN `Status` = 'New Origination' THEN `Current RWA` - `Previous RWA` ELSE 0 END) AS impact_new_origination,
+            SUM(CASE WHEN `Status` = 'Drop' THEN `Current RWA` - `Previous RWA` ELSE 0 END) AS impact_drop
+        FROM rwa_data WHERE 1=1"""
+    params = []
+    
+    if selected_cparty:
+        placeholders = ','.join(['?'] * len(selected_cparty))
+        query += f" AND `Cparty Type` IN ({placeholders})"
+        params.extend(selected_cparty)
+    
+    if selected_customer:
+        placeholders = ','.join(['?'] * len(selected_customer))
+        query += f" AND `Customer Code` IN ({placeholders})"
+        params.extend(selected_customer)
+    
+    df = pd.read_sql_query(query, conn, params=params)
+    conn.close()
+    return df.iloc[0]  # Return the aggregated row
+
+# Layout of the app
+app.layout = html.Div([
+    html.H1("RWA Waterfall Analysis with Filters"),
+    
+    dcc.Dropdown(
+        id='cparty-filter',
+        placeholder="Select Cparty Type",
+        multi=True
+    ),
+    
+    dcc.Dropdown(
+        id='customer-filter',
+        placeholder="Select Customer Code",
+        multi=True
+    ),
+    
+    dcc.Graph(id='waterfall-graph')
+])
+
+# Populate dropdowns dynamically
+@app.callback(
+    [Output('cparty-filter', 'options'), Output('customer-filter', 'options')],
+    Input('waterfall-graph', 'id')
+)
+def populate_dropdowns(_):
+    conn = get_db_connection()
+    df = pd.read_sql_query("SELECT DISTINCT `Cparty Type`, `Customer Code` FROM rwa_data", conn)
+    conn.close()
+    
+    cparty_options = [{'label': i, 'value': i} for i in df["Cparty Type"].dropna().unique()]
+    customer_options = [{'label': i, 'value': i} for i in df["Customer Code"].dropna().unique()]
+    
+    return cparty_options, customer_options
+
+# Callback to update the graph
+@app.callback(
+    Output('waterfall-graph', 'figure'),
+    [Input('cparty-filter', 'value'),
+     Input('customer-filter', 'value')]
+)
+def update_graph(selected_cparty, selected_customer):
+    aggregated_data = fetch_aggregated_data(selected_cparty, selected_customer)
+    
+    if aggregated_data.isnull().all():
+        return go.Figure()
+    
+    categories = [
+        "Start (Total Previous RWA)", "Impact of FX Change on EAD", "Impact of EAD Change",
+        "Impact of RWA Percentage Change", "Impact of RWA Change due to New Origination", "Impact of RWA Change due to Drop", "End (Total Current RWA)"
+    ]
+    values = [
+        aggregated_data["total_previous_rwa"], aggregated_data["total_fx_impact"], aggregated_data["total_ead_impact"],
+        aggregated_data["total_rwa_percentage_impact"], aggregated_data["impact_new_origination"], aggregated_data["impact_drop"], aggregated_data["total_current_rwa"]
+    ]
+    
+    measures = ["absolute", "relative", "relative", "relative", "relative", "relative", "total"]
+    
+    fig = go.Figure(go.Waterfall(
+        name="RWA Impact",
+        orientation="v",
+        measure=measures,
+        x=categories,
+        text=[f"{v:.2f}" for v in values],
+        textposition = "outside",
+        y=values,
+        connector={"line": {"color": "gray"}}
+    ))
+    
+    fig.update_layout(
+        title="Filtered RWA Waterfall Analysis",
+        showlegend=True,
+        autosize=True,
+        uirevision='constant'
+    )
+    
+    return fig
+
+if __name__ == '__main__':
+    app.run_server(debug=True, threaded=True)
