@@ -1,0 +1,60 @@
+import os
+import time
+import csv
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pyspark.sql import SparkSession
+
+# === Config ===
+QUERY_DIR = "queries"
+SUMMARY_FILE = "query_summary.csv"
+MAX_PARALLEL = 5  # Tune based on cluster size
+
+# Spark session
+spark = SparkSession.builder \
+    .appName("ParallelHQLExecutor") \
+    .enableHiveSupport() \
+    .getOrCreate()
+
+# Collect .hql files
+hql_files = [f for f in os.listdir(QUERY_DIR) if f.endswith(".hql")]
+
+# Each result is a dict with metadata
+results = []
+
+def run_query(file_name):
+    path = os.path.join(QUERY_DIR, file_name)
+    with open(path, 'r') as f:
+        hql = f.read().strip()
+
+    start_time = time.time()
+    result = {
+        "query_name": file_name,
+        "status": "SUCCESS",
+        "duration_sec": 0,
+        "error_message": ""
+    }
+
+    try:
+        spark.sql(hql)
+    except Exception as e:
+        result["status"] = "FAIL"
+        result["error_message"] = str(e)
+
+    result["duration_sec"] = round(time.time() - start_time, 2)
+    return result
+
+# Run in parallel
+with ThreadPoolExecutor(max_workers=MAX_PARALLEL) as executor:
+    future_to_file = {executor.submit(run_query, f): f for f in hql_files}
+    for future in as_completed(future_to_file):
+        res = future.result()
+        print(f"[{res['status']}] {res['query_name']} - {res['duration_sec']}s")
+        results.append(res)
+
+# Write summary CSV
+with open(SUMMARY_FILE, 'w', newline='') as csvfile:
+    writer = csv.DictWriter(csvfile, fieldnames=["query_name", "status", "duration_sec", "error_message"])
+    writer.writeheader()
+    writer.writerows(results)
+
+spark.stop()
