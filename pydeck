@@ -1,0 +1,92 @@
+import pydeck as pdk
+import pandas as pd
+
+# Sample ZIP-level data
+zip_df = pd.DataFrame({
+    'zip_code': ['10001', '10002', '10003', '10004', '10005'],
+    'lat': [40.75, 40.72, 40.73, 40.74, 40.76],
+    'lon': [-73.99, -73.98, -73.94, -73.95, -73.93],
+    'exposure': [100000, 250000, 180000, 300000, 220000],
+    'cluster_disaster': [1, 3, 5, 2, 4],
+    'cluster_credit_score': ['A', 'B', 'C', 'A', 'B']
+})
+
+# Color maps
+disaster_color_map = {
+    1: [255, 200, 200],  # light red
+    2: [255, 150, 150],
+    3: [255, 100, 100],
+    4: [255, 50, 50],
+    5: [200, 0, 0]       # dark red
+}
+
+credit_color_map = {
+    'A': [0, 200, 0],     # green
+    'B': [255, 165, 0],   # orange
+    'C': [0, 0, 255]      # blue
+}
+
+# Map colors to data
+zip_df['disaster_color'] = zip_df['cluster_disaster'].map(disaster_color_map)
+zip_df['credit_color'] = zip_df['cluster_credit_score'].map(credit_color_map)
+
+# Disaster Cluster Layer (flat circles)
+disaster_layer = pdk.Layer(
+    "ScatterplotLayer",
+    data=zip_df,
+    get_position='[lon, lat]',
+    get_radius=2500,
+    get_fill_color='disaster_color',
+    pickable=True,
+    opacity=0.4,
+)
+
+# Exposure Layer (3D columns)
+exposure_layer = pdk.Layer(
+    "ColumnLayer",
+    data=zip_df,
+    get_position='[lon, lat]',
+    get_elevation='exposure',
+    elevation_scale=0.01,
+    radius=2000,
+    get_fill_color=[0, 255, 0],  # Green columns
+    pickable=True,
+    auto_highlight=True,
+)
+
+# Credit Score Layer (small dots on top)
+credit_layer = pdk.Layer(
+    "ScatterplotLayer",
+    data=zip_df,
+    get_position='[lon, lat]',
+    get_radius=1000,
+    get_fill_color='credit_color',
+    pickable=True,
+)
+
+# Initial view of the map
+view_state = pdk.ViewState(
+    latitude=zip_df['lat'].mean(),
+    longitude=zip_df['lon'].mean(),
+    zoom=10,
+    pitch=40
+)
+
+# Tooltip HTML
+tooltip = {
+    "html": "<b>ZIP:</b> {zip_code}<br/>"
+            "<b>Exposure:</b> {exposure}<br/>"
+            "<b>Disaster Cluster:</b> {cluster_disaster}<br/>"
+            "<b>Credit Score Cluster:</b> {cluster_credit_score}",
+    "style": {"backgroundColor": "black", "color": "white"}
+}
+
+# Combine all layers into the Deck
+deck = pdk.Deck(
+    layers=[disaster_layer, exposure_layer, credit_layer],
+    initial_view_state=view_state,
+    tooltip=tooltip
+)
+
+# Export as interactive HTML file
+deck.to_html("zip_exposure_cluster_map.html", notebook_display=False)
